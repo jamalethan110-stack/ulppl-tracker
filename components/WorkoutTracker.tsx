@@ -8,6 +8,14 @@ import {
   defaultDayIndexForToday,
   todayISO,
 } from "@/lib/workoutData";
+import {
+  suggestProgressions,
+  latestSet,
+  parseTopReps,
+  incrementFor,
+  type ProgressionSuggestion,
+} from "@/lib/progression";
+import type { ExerciseSet } from "@/lib/types";
 import { createClient } from "@/lib/supabase/client";
 
 type Tab = "exercises" | "abs" | "info";
@@ -20,34 +28,46 @@ export default function WorkoutTracker() {
   const [tab, setTab] = useState<Tab>("exercises");
   const [loading, setLoading] = useState(true);
   const [date] = useState(todayISO());
+  const [allSets, setAllSets] = useState<ExerciseSet[]>([]);
+  const [editingKey, setEditingKey] = useState<string | null>(null);
 
   useEffect(() => {
     setActiveDay(defaultDayIndexForToday());
   }, []);
 
-  // Load today's completions
+  // Load today's completions + last 30 days of logged sets.
   useEffect(() => {
     let cancelled = false;
     (async () => {
       setLoading(true);
-      const { data, error } = await supabase
+
+      const { data: comp } = await supabase
         .from("workout_completions")
         .select("day_index, exercise_index, kind")
         .eq("completed_on", date);
-      if (!cancelled) {
-        if (!error && data) {
-          const mains: Record<string, boolean> = {};
-          const abs: Record<string, boolean> = {};
-          for (const row of data) {
-            const k = `${row.day_index}-ex-${row.exercise_index}`;
-            if (row.kind === "abs") abs[k] = true;
-            else mains[k] = true;
-          }
-          setChecked(mains);
-          setAbsChecked(abs);
-        }
-        setLoading(false);
+
+      // Pull 30 days of sets so progression has plenty of history.
+      const since = new Date();
+      since.setDate(since.getDate() - 30);
+      const sinceISO = since.toISOString().slice(0, 10);
+      const { data: setsData } = await supabase
+        .from("exercise_sets")
+        .select("*")
+        .gte("performed_on", sinceISO);
+
+      if (cancelled) return;
+
+      const mains: Record<string, boolean> = {};
+      const abs: Record<string, boolean> = {};
+      for (const row of comp ?? []) {
+        const k = `${row.day_index}-ex-${row.exercise_index}`;
+        if (row.kind === "abs") abs[k] = true;
+        else mains[k] = true;
       }
+      setChecked(mains);
+      setAbsChecked(abs);
+      setAllSets((setsData ?? []) as ExerciseSet[]);
+      setLoading(false);
     })();
     return () => {
       cancelled = true;
@@ -109,6 +129,41 @@ export default function WorkoutTracker() {
     }
   };
 
+  const saveSet = async (
+    exIndex: number,
+    weight: number,
+    topReps: number,
+    targetTop: number | null
+  ) => {
+    const userId = (await supabase.auth.getUser()).data.user?.id;
+    if (!userId) return;
+    const hitTop = targetTop == null ? false : topReps >= targetTop;
+    const row = {
+      user_id: userId,
+      day_index: activeDay,
+      exercise_index: exIndex,
+      weight,
+      top_reps: topReps,
+      hit_top: hitTop,
+      performed_on: date,
+    };
+    await supabase
+      .from("exercise_sets")
+      .upsert(row, { onConflict: "user_id,day_index,exercise_index,performed_on" });
+    setAllSets((prev) => {
+      const filtered = prev.filter(
+        (s) =>
+          !(
+            s.day_index === activeDay &&
+            s.exercise_index === exIndex &&
+            s.performed_on === date
+          )
+      );
+      // We don't have the real DB-assigned id here, but we don't use it on the UI.
+      return [...filtered, { id: "local", ...row } as ExerciseSet];
+    });
+  };
+
   const done = day.exercises.filter((_, i) => checked[`${activeDay}-ex-${i}`])
     .length;
   const total = day.exercises.length;
@@ -121,6 +176,11 @@ export default function WorkoutTracker() {
     ["QUADS", "HAMS", "CALVES", "GLUTES"].includes(e.focus)
   ).length;
   const abCount = day.abs ? day.abs.length : 0;
+
+  const suggestions: ProgressionSuggestion[] = useMemo(
+    () => suggestProgressions(allSets, date),
+    [allSets, date]
+  );
 
   return (
     <div style={{ minHeight: "100vh", background: "#080808", color: "#e2e2e2" }}>
@@ -152,7 +212,7 @@ export default function WorkoutTracker() {
                   marginBottom: 3,
                 }}
               >
-                SCIENCE-BASED · ULPPL · ARM &amp; LEG FOCUS
+                SCIENCE-BASED · ULPPL · TRAINING ONLY
               </div>
               <div
                 style={{
@@ -378,6 +438,71 @@ export default function WorkoutTracker() {
           />
         </div>
 
+        {/* Progression suggestions — only show when we have data */}
+        {suggestions.length > 0 && (
+          <div
+            style={{
+              background: "#0e0e0e",
+              border: "1px solid #1a1a1a",
+              borderRadius: 11,
+              padding: "13px 14px",
+              marginBottom: 14,
+            }}
+          >
+            <div
+              style={{
+                fontSize: 9,
+                letterSpacing: "0.18em",
+                color: "#fb923c",
+                fontWeight: 700,
+                marginBottom: 9,
+              }}
+            >
+              ⬆ READY TO ADD WEIGHT
+            </div>
+            {suggestions.slice(0, 5).map((s) => (
+              <div
+                key={`${s.dayIndex}-${s.exerciseIndex}`}
+                style={{
+                  display: "flex",
+                  justifyContent: "space-between",
+                  alignItems: "center",
+                  padding: "7px 0",
+                  borderBottom: "1px solid #141414",
+                }}
+              >
+                <div>
+                  <div style={{ fontSize: 13, color: "#ddd", fontWeight: 500 }}>
+                    {s.exerciseName}
+                  </div>
+                  <div
+                    style={{
+                      fontSize: 10,
+                      color: "#555",
+                      letterSpacing: "0.05em",
+                      marginTop: 2,
+                    }}
+                  >
+                    D{s.dayIndex + 1} · hit top {s.consecutiveTopHits}× in a row
+                  </div>
+                </div>
+                <div style={{ textAlign: "right" }}>
+                  <div
+                    style={{
+                      fontSize: 13,
+                      color: "#fb923c",
+                      fontWeight: 700,
+                    }}
+                  >
+                    {s.currentWeight} → {s.suggestedWeight} lb
+                  </div>
+                  <div style={{ fontSize: 10, color: "#555" }}>+{s.increment} lb</div>
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+
         <div
           style={{
             display: "flex",
@@ -438,56 +563,107 @@ export default function WorkoutTracker() {
               const key = `${activeDay}-ex-${i}`;
               const isDone = !!checked[key];
               const fc = focusColors[ex.focus] || "#555";
+              const last = latestSet(allSets, activeDay, i);
+              const targetTop = parseTopReps(ex.reps);
+              const isEditing = editingKey === key;
               return (
-                <div
-                  key={i}
-                  className={`ex-row${isDone ? " done" : ""}`}
-                  onClick={() => toggle(i)}
-                >
+                <div key={i}>
                   <div
-                    className={`chk${isDone ? " on" : ""}`}
-                    style={{ ...({ "--ac": accent } as React.CSSProperties) }}
+                    className={`ex-row${isDone ? " done" : ""}`}
+                    onClick={() => toggle(i)}
                   >
-                    {isDone && (
-                      <svg width="10" height="8" viewBox="0 0 10 8">
-                        <path
-                          d="M1 3.5L3.8 6.5L9 1"
-                          stroke="#000"
-                          strokeWidth="2"
-                          strokeLinecap="round"
-                          strokeLinejoin="round"
-                        />
-                      </svg>
-                    )}
-                  </div>
-                  <div style={{ flex: 1 }}>
                     <div
-                      style={{
-                        fontSize: 14,
-                        fontWeight: 500,
-                        color: isDone ? "#2a2a2a" : "#ddd",
-                      }}
+                      className={`chk${isDone ? " on" : ""}`}
+                      style={{ ...({ "--ac": accent } as React.CSSProperties) }}
                     >
-                      {ex.name}
+                      {isDone && (
+                        <svg width="10" height="8" viewBox="0 0 10 8">
+                          <path
+                            d="M1 3.5L3.8 6.5L9 1"
+                            stroke="#000"
+                            strokeWidth="2"
+                            strokeLinecap="round"
+                            strokeLinejoin="round"
+                          />
+                        </svg>
+                      )}
                     </div>
-                    <span
-                      className="ftag"
-                      style={{ background: `${fc}18`, color: fc }}
-                    >
-                      {ex.focus}
-                    </span>
-                  </div>
-                  <div style={{ textAlign: "right" }}>
-                    <div
-                      style={{
-                        fontSize: 13,
-                        fontWeight: 600,
-                        color: isDone ? "#2a2a2a" : accent,
-                      }}
-                    >
-                      {ex.sets} × {ex.reps}
+                    <div style={{ flex: 1 }}>
+                      <div
+                        style={{
+                          fontSize: 14,
+                          fontWeight: 500,
+                          color: isDone ? "#2a2a2a" : "#ddd",
+                        }}
+                      >
+                        {ex.name}
+                      </div>
+                      <span
+                        className="ftag"
+                        style={{ background: `${fc}18`, color: fc }}
+                      >
+                        {ex.focus}
+                      </span>
+                      {last && (
+                        <span
+                          style={{
+                            marginLeft: 8,
+                            fontSize: 10,
+                            color: last.hit_top ? "#4ade80" : "#666",
+                            fontWeight: 600,
+                            letterSpacing: "0.04em",
+                          }}
+                        >
+                          LAST · {last.weight} lb × {last.top_reps}
+                          {last.hit_top ? " ✓" : ""}
+                        </span>
+                      )}
+                    </div>
+                    <div style={{ textAlign: "right" }}>
+                      <div
+                        style={{
+                          fontSize: 13,
+                          fontWeight: 600,
+                          color: isDone ? "#2a2a2a" : accent,
+                        }}
+                      >
+                        {ex.sets} × {ex.reps}
+                      </div>
+                      <button
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          setEditingKey(isEditing ? null : key);
+                        }}
+                        style={{
+                          marginTop: 4,
+                          fontSize: 9,
+                          letterSpacing: "0.14em",
+                          color: "#fb923c",
+                          background: "transparent",
+                          border: "1px solid #2a1a0a",
+                          padding: "3px 7px",
+                          borderRadius: 6,
+                          cursor: "pointer",
+                        }}
+                      >
+                        {isEditing ? "CLOSE" : "LOG"}
+                      </button>
                     </div>
                   </div>
+                  {isEditing && (
+                    <LogSetForm
+                      exerciseIndex={i}
+                      targetTop={targetTop}
+                      initialWeight={last?.weight ?? null}
+                      initialReps={last?.top_reps ?? null}
+                      accent={accent}
+                      onSave={async (w, r) => {
+                        await saveSet(i, w, r, targetTop);
+                        setEditingKey(null);
+                      }}
+                      incrementHint={incrementFor(ex.focus)}
+                    />
+                  )}
                 </div>
               );
             })}
@@ -514,8 +690,7 @@ export default function WorkoutTracker() {
               <div style={{ fontSize: 12, color: "#666", lineHeight: 1.65 }}>
                 Abs are trained 4× this week. For them to POP on a cut, weighted
                 movements like cable crunch matter more than crunches — they
-                build the actual muscle. Cardio and diet reveal them, training
-                builds them.
+                build the actual muscle. Cardio reveals them, training builds them.
               </div>
             </div>
             {day.abs.map((ex, i) => {
@@ -632,9 +807,7 @@ export default function WorkoutTracker() {
                   >
                     CARDIO
                   </div>
-                  <div style={{ fontSize: 12, color: "#777" }}>
-                    {day.cardio}
-                  </div>
+                  <div style={{ fontSize: 12, color: "#777" }}>{day.cardio}</div>
                 </div>
               </div>
             )}
@@ -721,6 +894,137 @@ export default function WorkoutTracker() {
           </div>
         )}
       </div>
+    </div>
+  );
+}
+
+// Inline "log this set" form. Two fields: weight + top reps. Saves on Enter or Save tap.
+function LogSetForm({
+  exerciseIndex,
+  targetTop,
+  initialWeight,
+  initialReps,
+  accent,
+  onSave,
+  incrementHint,
+}: {
+  exerciseIndex: number;
+  targetTop: number | null;
+  initialWeight: number | null;
+  initialReps: number | null;
+  accent: string;
+  onSave: (weight: number, reps: number) => Promise<void>;
+  incrementHint: number;
+}) {
+  const [weight, setWeight] = useState<string>(
+    initialWeight != null ? String(initialWeight) : ""
+  );
+  const [reps, setReps] = useState<string>(
+    initialReps != null ? String(initialReps) : ""
+  );
+  const [saving, setSaving] = useState(false);
+
+  const submit = async () => {
+    const w = parseFloat(weight);
+    const r = parseInt(reps, 10);
+    if (Number.isNaN(w) || Number.isNaN(r)) return;
+    setSaving(true);
+    await onSave(w, r);
+    setSaving(false);
+  };
+
+  return (
+    <div
+      style={{
+        background: "#0a0a0a",
+        border: "1px solid #181818",
+        borderRadius: 10,
+        padding: "10px 12px",
+        marginTop: -2,
+        marginBottom: 8,
+        display: "grid",
+        gridTemplateColumns: "1fr 1fr auto",
+        gap: 8,
+        alignItems: "end",
+      }}
+      onClick={(e) => e.stopPropagation()}
+    >
+      <label style={{ fontSize: 9, letterSpacing: "0.12em", color: "#555" }}>
+        WEIGHT (LB)
+        <input
+          type="number"
+          inputMode="decimal"
+          value={weight}
+          onChange={(e) => setWeight(e.target.value)}
+          style={{
+            display: "block",
+            width: "100%",
+            marginTop: 4,
+            background: "#111",
+            border: "1px solid #1f1f1f",
+            color: "#fff",
+            padding: "8px 9px",
+            borderRadius: 6,
+            fontSize: 14,
+          }}
+        />
+      </label>
+      <label style={{ fontSize: 9, letterSpacing: "0.12em", color: "#555" }}>
+        TOP REPS
+        <input
+          type="number"
+          inputMode="numeric"
+          value={reps}
+          onChange={(e) => setReps(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === "Enter") submit();
+          }}
+          placeholder={targetTop != null ? `goal ${targetTop}` : ""}
+          style={{
+            display: "block",
+            width: "100%",
+            marginTop: 4,
+            background: "#111",
+            border: "1px solid #1f1f1f",
+            color: "#fff",
+            padding: "8px 9px",
+            borderRadius: 6,
+            fontSize: 14,
+          }}
+        />
+      </label>
+      <button
+        onClick={submit}
+        disabled={saving}
+        style={{
+          background: accent,
+          color: "#000",
+          border: "none",
+          padding: "9px 14px",
+          borderRadius: 6,
+          fontSize: 11,
+          fontWeight: 800,
+          letterSpacing: "0.14em",
+          cursor: "pointer",
+          opacity: saving ? 0.5 : 1,
+        }}
+      >
+        {saving ? "..." : "SAVE"}
+      </button>
+      {targetTop != null && (
+        <div
+          style={{
+            gridColumn: "1 / -1",
+            fontSize: 10,
+            color: "#444",
+            letterSpacing: "0.04em",
+            marginTop: -2,
+          }}
+        >
+          Hit {targetTop} reps two sessions in a row → app will tell you to add{" "}
+          {incrementHint} lb. Exercise #{exerciseIndex + 1}.
+        </div>
+      )}
     </div>
   );
 }

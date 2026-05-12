@@ -1,6 +1,13 @@
 -- ULPPL Tracker — Supabase Schema
 -- Run this in the Supabase SQL Editor after creating a new project.
 -- All tables are user-scoped via RLS policies that match auth.uid().
+--
+-- NOTE: If your project previously had `food_entries`, `food_favorites`, and
+-- `weight_entries` tables, you can drop them — the app no longer uses them.
+-- Uncomment the lines below to delete:
+--   drop table if exists public.food_entries;
+--   drop table if exists public.food_favorites;
+--   drop table if exists public.weight_entries;
 
 ------------------------------------------------------------
 -- 1. WORKOUT COMPLETIONS
@@ -21,67 +28,37 @@ create index if not exists workout_completions_user_date_idx
   on public.workout_completions (user_id, completed_on);
 
 ------------------------------------------------------------
--- 2. WEIGHT ENTRIES
+-- 2. EXERCISE SETS
+-- One row per exercise per training day. Records the weight used and the
+-- top reps achieved across the working sets. `hit_top` is true when the
+-- lifter hit the top of the target rep range — used by the progression
+-- analyzer to recommend bumping the weight up.
 ------------------------------------------------------------
-create table if not exists public.weight_entries (
+create table if not exists public.exercise_sets (
   id uuid primary key default gen_random_uuid(),
   user_id uuid not null references auth.users(id) on delete cascade,
-  weight numeric(6,2) not null,      -- in user's preferred unit
-  unit text not null default 'lb',   -- 'lb' | 'kg'
-  entry_date date not null default current_date,
-  note text,
+  day_index int not null,            -- 0..4
+  exercise_index int not null,       -- index within that day
+  weight numeric(6,2) not null,      -- in lb
+  top_reps int not null,             -- highest reps across the working sets
+  hit_top boolean not null default false,
+  performed_on date not null default current_date,
   created_at timestamptz not null default now(),
-  unique (user_id, entry_date)
+  unique (user_id, day_index, exercise_index, performed_on)
 );
 
-create index if not exists weight_entries_user_date_idx
-  on public.weight_entries (user_id, entry_date desc);
+create index if not exists exercise_sets_user_date_idx
+  on public.exercise_sets (user_id, performed_on desc);
+
+create index if not exists exercise_sets_user_lift_idx
+  on public.exercise_sets (user_id, day_index, exercise_index, performed_on desc);
 
 ------------------------------------------------------------
--- 3. FOOD ENTRIES
-------------------------------------------------------------
-create table if not exists public.food_entries (
-  id uuid primary key default gen_random_uuid(),
-  user_id uuid not null references auth.users(id) on delete cascade,
-  name text not null,
-  calories numeric(7,2) not null default 0,
-  protein numeric(6,2) not null default 0,
-  carbs numeric(6,2) not null default 0,
-  fat numeric(6,2) not null default 0,
-  servings numeric(5,2) not null default 1,
-  meal text not null default 'snack',  -- breakfast|lunch|dinner|snack
-  entry_date date not null default current_date,
-  created_at timestamptz not null default now()
-);
-
-create index if not exists food_entries_user_date_idx
-  on public.food_entries (user_id, entry_date desc);
-
-------------------------------------------------------------
--- 4. FOOD FAVORITES (user's reusable food list)
-------------------------------------------------------------
-create table if not exists public.food_favorites (
-  id uuid primary key default gen_random_uuid(),
-  user_id uuid not null references auth.users(id) on delete cascade,
-  name text not null,
-  calories numeric(7,2) not null default 0,
-  protein numeric(6,2) not null default 0,
-  carbs numeric(6,2) not null default 0,
-  fat numeric(6,2) not null default 0,
-  serving_label text,                  -- e.g. "1 scoop", "100g"
-  created_at timestamptz not null default now(),
-  unique (user_id, name)
-);
-
-------------------------------------------------------------
--- 5. ROW LEVEL SECURITY
+-- 3. ROW LEVEL SECURITY
 ------------------------------------------------------------
 alter table public.workout_completions enable row level security;
-alter table public.weight_entries enable row level security;
-alter table public.food_entries enable row level security;
-alter table public.food_favorites enable row level security;
+alter table public.exercise_sets enable row level security;
 
--- Helper to (re)create policies idempotently
 do $$
 begin
   -- workout_completions
@@ -98,45 +75,17 @@ begin
   create policy "wc_delete_own" on public.workout_completions
     for delete using (auth.uid() = user_id);
 
-  -- weight_entries
-  drop policy if exists "we_select_own" on public.weight_entries;
-  drop policy if exists "we_insert_own" on public.weight_entries;
-  drop policy if exists "we_update_own" on public.weight_entries;
-  drop policy if exists "we_delete_own" on public.weight_entries;
-  create policy "we_select_own" on public.weight_entries
+  -- exercise_sets
+  drop policy if exists "es_select_own" on public.exercise_sets;
+  drop policy if exists "es_insert_own" on public.exercise_sets;
+  drop policy if exists "es_update_own" on public.exercise_sets;
+  drop policy if exists "es_delete_own" on public.exercise_sets;
+  create policy "es_select_own" on public.exercise_sets
     for select using (auth.uid() = user_id);
-  create policy "we_insert_own" on public.weight_entries
+  create policy "es_insert_own" on public.exercise_sets
     for insert with check (auth.uid() = user_id);
-  create policy "we_update_own" on public.weight_entries
+  create policy "es_update_own" on public.exercise_sets
     for update using (auth.uid() = user_id);
-  create policy "we_delete_own" on public.weight_entries
-    for delete using (auth.uid() = user_id);
-
-  -- food_entries
-  drop policy if exists "fe_select_own" on public.food_entries;
-  drop policy if exists "fe_insert_own" on public.food_entries;
-  drop policy if exists "fe_update_own" on public.food_entries;
-  drop policy if exists "fe_delete_own" on public.food_entries;
-  create policy "fe_select_own" on public.food_entries
-    for select using (auth.uid() = user_id);
-  create policy "fe_insert_own" on public.food_entries
-    for insert with check (auth.uid() = user_id);
-  create policy "fe_update_own" on public.food_entries
-    for update using (auth.uid() = user_id);
-  create policy "fe_delete_own" on public.food_entries
-    for delete using (auth.uid() = user_id);
-
-  -- food_favorites
-  drop policy if exists "ff_select_own" on public.food_favorites;
-  drop policy if exists "ff_insert_own" on public.food_favorites;
-  drop policy if exists "ff_update_own" on public.food_favorites;
-  drop policy if exists "ff_delete_own" on public.food_favorites;
-  create policy "ff_select_own" on public.food_favorites
-    for select using (auth.uid() = user_id);
-  create policy "ff_insert_own" on public.food_favorites
-    for insert with check (auth.uid() = user_id);
-  create policy "ff_update_own" on public.food_favorites
-    for update using (auth.uid() = user_id);
-  create policy "ff_delete_own" on public.food_favorites
+  create policy "es_delete_own" on public.exercise_sets
     for delete using (auth.uid() = user_id);
 end $$;

@@ -4,6 +4,8 @@ import { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import { createClient } from "@/lib/supabase/client";
 import { split, defaultDayIndexForToday, todayISO } from "@/lib/workoutData";
+import { suggestProgressions, type ProgressionSuggestion } from "@/lib/progression";
+import type { ExerciseSet } from "@/lib/types";
 
 export default function Dashboard() {
   const supabase = useMemo(() => createClient(), []);
@@ -13,11 +15,7 @@ export default function Dashboard() {
 
   const [email, setEmail] = useState<string>("");
   const [doneCount, setDoneCount] = useState(0);
-  const [latestWeight, setLatestWeight] = useState<{ w: number; u: string } | null>(
-    null
-  );
-  const [todayCals, setTodayCals] = useState(0);
-  const [todayProtein, setTodayProtein] = useState(0);
+  const [suggestions, setSuggestions] = useState<ProgressionSuggestion[]>([]);
 
   useEffect(() => {
     (async () => {
@@ -32,28 +30,16 @@ export default function Dashboard() {
         .eq("kind", "main");
       setDoneCount(wc?.length ?? 0);
 
-      const { data: we } = await supabase
-        .from("weight_entries")
-        .select("weight, unit")
-        .order("entry_date", { ascending: false })
-        .limit(1);
-      if (we && we[0])
-        setLatestWeight({ w: Number(we[0].weight), u: we[0].unit });
-
-      const { data: fe } = await supabase
-        .from("food_entries")
-        .select("calories, protein, servings")
-        .eq("entry_date", today);
-      if (fe) {
-        let c = 0;
-        let p = 0;
-        for (const r of fe) {
-          c += Number(r.calories) * Number(r.servings);
-          p += Number(r.protein) * Number(r.servings);
-        }
-        setTodayCals(Math.round(c));
-        setTodayProtein(Math.round(p));
-      }
+      const since = new Date();
+      since.setDate(since.getDate() - 30);
+      const sinceISO = since.toISOString().slice(0, 10);
+      const { data: setsData } = await supabase
+        .from("exercise_sets")
+        .select("*")
+        .gte("performed_on", sinceISO);
+      setSuggestions(
+        suggestProgressions((setsData ?? []) as ExerciseSet[], today)
+      );
     })();
   }, [supabase, today, dayIdx]);
 
@@ -178,113 +164,94 @@ export default function Dashboard() {
         </div>
       </Link>
 
-      {/* Weight + food */}
-      <div
+      {/* Progression — exercises ready for a weight bump */}
+      <Link
+        href="/workout"
+        className="card"
         style={{
-          display: "grid",
-          gridTemplateColumns: "1fr 1fr",
-          gap: 10,
+          display: "block",
           marginBottom: 12,
+          textDecoration: "none",
+          color: "inherit",
+          borderLeft: "3px solid #fb923c",
         }}
       >
-        <Link
-          href="/weight"
-          className="card"
-          style={{ textDecoration: "none", color: "inherit" }}
+        <div
+          style={{
+            fontSize: 9,
+            color: "#fb923c",
+            letterSpacing: "0.18em",
+            marginBottom: 6,
+            fontWeight: 700,
+          }}
         >
-          <div
-            style={{
-              fontSize: 9,
-              color: "#383838",
-              letterSpacing: "0.18em",
-              marginBottom: 4,
-            }}
-          >
-            WEIGHT
+          ⬆ PROGRESSION
+        </div>
+        {suggestions.length === 0 ? (
+          <div style={{ fontSize: 12, color: "#666", lineHeight: 1.55 }}>
+            Log a weight on each exercise as you train. After you hit the top of
+            the rep range two sessions in a row, this card will tell you exactly
+            which lifts to bump up and by how much.
           </div>
-          <div
-            style={{
-              fontFamily: "'Anton', sans-serif",
-              fontSize: 26,
-              color: "#fff",
-            }}
-          >
-            {latestWeight ? latestWeight.w : "—"}
-            {latestWeight && (
-              <span
-                style={{ fontSize: 12, color: "#555", marginLeft: 4 }}
+        ) : (
+          <div>
+            <div
+              style={{
+                fontFamily: "'Anton', sans-serif",
+                fontSize: 26,
+                color: "#fff",
+                marginBottom: 6,
+              }}
+            >
+              {suggestions.length} {suggestions.length === 1 ? "LIFT" : "LIFTS"} READY
+            </div>
+            {suggestions.slice(0, 3).map((s) => (
+              <div
+                key={`${s.dayIndex}-${s.exerciseIndex}`}
+                style={{
+                  display: "flex",
+                  justifyContent: "space-between",
+                  fontSize: 12,
+                  color: "#bbb",
+                  padding: "4px 0",
+                  borderBottom: "1px solid #141414",
+                }}
               >
-                {latestWeight.u}
-              </span>
+                <span>{s.exerciseName}</span>
+                <span style={{ color: "#fb923c", fontWeight: 700 }}>
+                  +{s.increment} lb
+                </span>
+              </div>
+            ))}
+            {suggestions.length > 3 && (
+              <div
+                style={{
+                  fontSize: 10,
+                  color: "#555",
+                  marginTop: 6,
+                  letterSpacing: "0.05em",
+                }}
+              >
+                + {suggestions.length - 3} more — see Train tab
+              </div>
             )}
           </div>
-        </Link>
-        <Link
-          href="/food"
-          className="card"
-          style={{ textDecoration: "none", color: "inherit" }}
-        >
-          <div
-            style={{
-              fontSize: 9,
-              color: "#383838",
-              letterSpacing: "0.18em",
-              marginBottom: 4,
-            }}
-          >
-            TODAY · CAL / PROTEIN
-          </div>
-          <div
-            style={{
-              fontFamily: "'Anton', sans-serif",
-              fontSize: 26,
-              color: "#fff",
-            }}
-          >
-            {todayCals}
-            <span style={{ fontSize: 12, color: "#555", marginLeft: 4 }}>
-              cal
-            </span>
-          </div>
-          <div style={{ fontSize: 11, color: "#fb923c", marginTop: 2 }}>
-            {todayProtein}g protein
-          </div>
-        </Link>
-      </div>
+        )}
+      </Link>
 
-      {/* Quick links */}
-      <div
+      {/* Quick link */}
+      <Link
+        href="/workout"
+        className="btn-primary"
         style={{
-          display: "grid",
-          gridTemplateColumns: "1fr 1fr",
-          gap: 10,
+          width: "auto",
+          justifyContent: "center",
+          padding: "14px",
+          display: "flex",
         }}
       >
-        <Link
-          href="/workout"
-          className="btn-primary"
-          style={{
-            width: "auto",
-            justifyContent: "center",
-            padding: "14px",
-          }}
-        >
-          START WORKOUT
-        </Link>
-        <Link
-          href="/food"
-          className="btn-primary"
-          style={{
-            width: "auto",
-            justifyContent: "center",
-            padding: "14px",
-            background: "#1a1a1a",
-            color: "#fff",
-          }}
-        >
-          LOG FOOD
-        </Link>
-      </div>
+        START WORKOUT
+      </Link>
     </div>
   );
 }
