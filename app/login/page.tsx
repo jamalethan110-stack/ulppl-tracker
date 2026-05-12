@@ -3,45 +3,33 @@
 import { useState } from "react";
 import { createClient } from "@/lib/supabase/client";
 
+// Single-user app — only this email can sign in.
+const ALLOWED_EMAIL = "jamalethan110@gmail.com";
+
 export default function LoginPage() {
   const supabase = createClient();
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
-  const [mode, setMode] = useState<"signin" | "signup">("signin");
   const [error, setError] = useState<string | null>(null);
-  const [info, setInfo] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
 
   const handle = async (e: React.FormEvent) => {
     e.preventDefault();
     setError(null);
-    setInfo(null);
+
+    if (email.trim().toLowerCase() !== ALLOWED_EMAIL) {
+      setError("This account isn't authorized.");
+      return;
+    }
+
     setSubmitting(true);
     try {
-      if (mode === "signin") {
-        const { error } = await supabase.auth.signInWithPassword({
-          email,
-          password,
-        });
-        if (error) setError(error.message);
-        else window.location.href = "/";
-      } else {
-        const { error } = await supabase.auth.signUp({
-          email,
-          password,
-          options: {
-            emailRedirectTo:
-              typeof window !== "undefined"
-                ? `${window.location.origin}/auth/callback`
-                : undefined,
-          },
-        });
-        if (error) setError(error.message);
-        else
-          setInfo(
-            "Account created. Check your email to confirm — or sign in if confirmation is disabled."
-          );
-      }
+      const { error } = await supabase.auth.signInWithPassword({
+        email: email.trim().toLowerCase(),
+        password,
+      });
+      if (error) setError(error.message);
+      else window.location.href = "/";
     } finally {
       setSubmitting(false);
     }
@@ -77,7 +65,17 @@ export default function LoginPage() {
               color: "#fff",
             }}
           >
-            {mode === "signin" ? "SIGN IN" : "CREATE ACCOUNT"}
+            SIGN IN
+          </div>
+          <div
+            style={{
+              marginTop: 8,
+              fontSize: 10,
+              letterSpacing: "0.2em",
+              color: "#3a3a3a",
+            }}
+          >
+            PRIVATE · INVITE ONLY
           </div>
         </div>
 
@@ -88,15 +86,17 @@ export default function LoginPage() {
             value={email}
             onChange={(e) => setEmail(e.target.value)}
             required
+            autoComplete="email"
           />
           <div style={{ height: 10 }} />
           <input
             type="password"
-            placeholder="Password (min 6 chars)"
+            placeholder="Password"
             value={password}
             onChange={(e) => setPassword(e.target.value)}
             required
             minLength={6}
+            autoComplete="current-password"
           />
           {error && (
             <div
@@ -109,17 +109,6 @@ export default function LoginPage() {
               {error}
             </div>
           )}
-          {info && (
-            <div
-              style={{
-                marginTop: 10,
-                fontSize: 12,
-                color: "#4ade80",
-              }}
-            >
-              {info}
-            </div>
-          )}
           <div style={{ height: 14 }} />
           <button
             type="submit"
@@ -127,26 +116,7 @@ export default function LoginPage() {
             style={{ width: "100%" }}
             disabled={submitting}
           >
-            {submitting
-              ? "…"
-              : mode === "signin"
-              ? "SIGN IN"
-              : "CREATE ACCOUNT"}
-          </button>
-          <div style={{ height: 12 }} />
-          <button
-            type="button"
-            className="btn-ghost"
-            style={{ width: "100%", textAlign: "center" }}
-            onClick={() => {
-              setMode(mode === "signin" ? "signup" : "signin");
-              setError(null);
-              setInfo(null);
-            }}
-          >
-            {mode === "signin"
-              ? "Don't have an account? Sign up"
-              : "Already have an account? Sign in"}
+            {submitting ? "…" : "SIGN IN"}
           </button>
         </form>
       </div>
