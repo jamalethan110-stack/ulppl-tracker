@@ -45,15 +45,17 @@ export interface WorkoutCompletion {
   completed_on: string;
 }
 
-// Logged weight + top rep count for a given exercise on a given day.
-// One row per (user, day_index, exercise_index, performed_on).
+// One row per individual working set. Lifter can bump weight across sets
+// (e.g. 135x8 → 155x6 → 165x6) and each is its own row.
+// Unique on (user, day_index, exercise_index, performed_on, set_index).
 export interface ExerciseSet {
   id: string;
   user_id: string;
   day_index: number;
   exercise_index: number;
+  set_index: number;       // 1-based set number within the session
   weight: number;          // in lb
-  top_reps: number;        // highest reps achieved across the working sets
-  hit_top: boolean;        // did they hit the top of the target rep range?
+  top_reps: number;        // reps performed on this set
+  hit_top: boolean;        // did this set hit the top of the target rep range?
   performed_on: string;    // YYYY-MM-DD
 }
